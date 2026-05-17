@@ -3,14 +3,15 @@ import os
 import uuid
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from app.core.config import settings
+
 # Ensure the directory for chroma data exists
 db_path = os.path.join(os.getcwd(), "chroma_db")
 if not os.path.exists(db_path):
     os.makedirs(db_path)
 
 client = chromadb.PersistentClient(path=db_path)
-# Using a versioned collection name to trigger a fresh chunked load
-collection = client.get_or_create_collection("spinach_v3")
+collection = client.get_or_create_collection(settings.CHROMA_COLLECTION_NAME)
 
 def add_to_collection(content: str, metadata: dict = None):
     doc_id = str(uuid.uuid4())

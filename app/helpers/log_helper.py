@@ -17,6 +17,17 @@ _LOG_DIR = Path(__file__).parent.parent.parent / "logs"
 _LOG_FILE = _LOG_DIR / "llm.log"
 
 
+def llm_logging_enabled() -> bool:
+    """LLM request/response logging is disabled in production."""
+    return settings.environment != "prod"
+
+
+def get_llm_callbacks() -> list[BaseCallbackHandler]:
+    if not llm_logging_enabled():
+        return []
+    return [LLMLoggingCallback()]
+
+
 # ---------------------------------------------------------------------------
 # Token counting
 # ---------------------------------------------------------------------------
@@ -82,6 +93,8 @@ class LLMLoggingCallback(BaseCallbackHandler):
         messages: List[List[BaseMessage]],
         **kwargs: Any,
     ) -> None:
+        if not llm_logging_enabled():
+            return
         model = (serialized or {}).get("kwargs", {}).get("model_name", "unknown")
         for batch in messages:
             openai_msgs = [_msg_to_openai(m) for m in batch]
@@ -97,6 +110,8 @@ class LLMLoggingCallback(BaseCallbackHandler):
     # -- response ------------------------------------------------------------
 
     def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        if not llm_logging_enabled():
+            return
         try:
             usage = getattr(response, "llm_output", None) or {}
             token_usage = usage.get("token_usage") or usage.get("usage") or {}
@@ -119,6 +134,8 @@ class LLMLoggingCallback(BaseCallbackHandler):
     # -- error ---------------------------------------------------------------
 
     def on_llm_error(self, error: Exception, **kwargs: Any) -> None:
+        if not llm_logging_enabled():
+            return
         self._log.error("LLM ERROR: %s", error, exc_info=error)
 
 

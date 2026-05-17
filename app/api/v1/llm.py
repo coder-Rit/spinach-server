@@ -1,161 +1,216 @@
+import asyncio
+import json
+import logging
+import uuid
+from typing import Any, Dict, List
+
 from fastapi import Depends, APIRouter
 from sqlalchemy.ext.asyncio import AsyncSession
-from langchain_core.messages import HumanMessage
-from langchain.agents import create_agent
 
 from app.schemas.chat import LlmPayload
-from app.clients.OpenaiClient import OpenaiClient
 from app.api.v1.auth import get_current_user
 from app.models.users import User
 from app.models.chat import ChatRole
-from app.db.session import get_async_session
+from app.db.session import AsyncSessionLocal, get_async_session
 from app.services.chat_service import ChatService
 from app.services.chat_session_service import ChatSessionService
-from app.services.project_service import ProjectService
 from app.helpers.chat_helpers import (
-    generate_session_name,
     build_message_history,
-    retrieve_rag_context,
-    select_tool_keys,
-    build_system_prompt,
-    save_context_to_file,
+    generate_session_name,
+    get_rag_context,
 )
+from langchain_core.messages import HumanMessage
 
-from app.tools.work_items import create_work_item, delete_work_item, update_work_item
-from app.tools.users import find_users, get_my_info
-from app.tools.projects import (
-    find_projects,
-    create_project,
-    update_project,
-    delete_project,
+from app.services.agent_service import (
+    classify_tool_and_rag,
+    get_tool_context,
 )
-from app.tools.tasks import find_tasks
-from app.tools.comments import add_comment, list_comments, delete_comment
-from app.tools.analytics import (
-    get_project_summary,
-    get_user_workload,
-    get_overdue_items,
-)
-from app.tools.workflow import (
-    reassign_work_item,
-    link_work_items,
-    bulk_update_status,
-    move_work_item,
-)
+from app.clients.OpenaiClient import AiClient
+from app.context.final_response_prompt import final_response_prompt_raw
+from app.context.tools import call_tools_prompt_raw
+from app.helpers.tool_helpers import MAX_TOOL_ROUNDS, execute_tool, safe_json_loads
 
 chat_router = APIRouter(prefix="/llm")
+logger = logging.getLogger(__name__)
 
 
-AGENT_TOOLS = [
-    # Work item CRUD
-    create_work_item,
-    delete_work_item,
-    update_work_item,
-    # Project CRUD
-    create_project,
-    update_project,
-    delete_project,
-    # Query tools
-    find_users,
-    get_my_info,
-    find_projects,
-    find_tasks,
-    # Comments
-    add_comment,
-    list_comments,
-    delete_comment,
-    # Analytics
-    get_project_summary,
-    get_user_workload,
-    get_overdue_items,
-    # Workflow
-    reassign_work_item,
-    link_work_items,
-    bulk_update_status,
-    move_work_item,
-]
+async def _persist_session_and_user_message(
+    session_id: uuid.UUID,
+    message: str,
+    user_id: uuid.UUID,
+) -> None:
+    """Ensure session exists, save the user message, and name new sessions via LLM."""
+    llm = AiClient.get_chat_llm()
+    try:
+        async with AsyncSessionLocal() as db:
+            session_service = ChatSessionService(db)
+            chat_service = ChatService(db)
+
+            session = await session_service.get(session_id)
+            if session is None:
+                placeholder = message[:60].strip() or "New Chat"
+                await session_service.create(
+                    name=placeholder,
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                name = await generate_session_name(message, llm)
+                await session_service.update_name(session_id, name)
+
+            await chat_service.create(
+                session_id=session_id,
+                message=message,
+                role=ChatRole.USER,
+                user_id=user_id,
+            )
+    except Exception:
+        logger.exception(
+            "Background session/user-message persist failed for session %s",
+            session_id,
+        )
 
 
-async def _resolve_session(
-    payload: LlmPayload, session_service: ChatSessionService, user_id, llm
-):
-    """Return an existing session or create a new one with an AI-generated name."""
-    if payload.session_id is not None:
-        session = await session_service.get(payload.session_id)
-        if session:
-            return session
-
-    name = await generate_session_name(payload.message, llm)
-    return await session_service.create(name=name, user_id=user_id)
+def _with_current_user_message(history: list, message: str) -> list:
+    """Include the in-flight user turn when the background save has not committed yet."""
+    if (
+        history
+        and isinstance(history[-1], HumanMessage)
+        and history[-1].content == message
+    ):
+        return history
+    return [*history, HumanMessage(content=message)]
 
 
 @chat_router.post("")
 async def chat_llm(
     payload: LlmPayload,
-    client: OpenaiClient = Depends(OpenaiClient),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
     chat_service = ChatService(db)
-    session_service = ChatSessionService(db)
+    llm = AiClient.get_chat_llm()
+    session_id = payload.session_id
 
-    # 1. Resolve or create session
-    session = await _resolve_session(
-        payload, session_service, current_user.user_id, client.llm
+    # 1–2. Resolve session and save user message without blocking the LLM pipeline
+    asyncio.create_task(
+        _persist_session_and_user_message(
+            session_id=session_id,
+            message=payload.message,
+            user_id=current_user.user_id,
+        )
     )
-    session_id = session.session_id
 
-    # 2. Load history & persist user message
-    history_items = await chat_service.get_recent(session_id=session_id, limit=10)
-    history = build_message_history(history_items)
+    # 3. Load recent chat history
+    recent_10_chats = await chat_service.get_recent(
+        session_id=session_id,
+        limit=10,
+        chat_types=[ChatRole.USER, ChatRole.AI],
+    )
 
+    recent_10_history = _with_current_user_message(
+        build_message_history(recent_10_chats), payload.message
+    )
+    recent_5_history = recent_10_history[:5]
+    built_messages = [msg.content for msg in recent_5_history]
+
+
+ 
+
+    tools_context = get_tool_context(built_messages, llm=llm)
+
+    _, rag_context = get_rag_context(payload.message)
+
+    # 5. Manual tool orchestration loop
+    tool_outputs: List[Dict[str, Any]] = []
+    current_prompt_context = "\n".join(
+        f"USER: {msg.content}"
+        if isinstance(msg, HumanMessage)
+        else f"AI: {msg.content}"
+        for msg in recent_10_history
+    )
+
+    for _ in range(MAX_TOOL_ROUNDS):
+         
+        call_tools_prompt = call_tools_prompt_raw.format(
+            tools_context=tools_context,
+            rag_context=rag_context,
+            prioritized_messages=current_prompt_context,
+            my_uuid=current_user.user_id
+        )
+
+        tool_decision_msg = await llm.ainvoke([HumanMessage(content=call_tools_prompt)])
+        tool_decision_text = getattr(
+            tool_decision_msg, "content", str(tool_decision_msg)
+        )
+
+        try:
+            tool_decision = safe_json_loads(tool_decision_text)
+        except Exception as exc:
+            tool_outputs.append(
+                {
+                    "success": False,
+                    "tool": "router_parse_error",
+                    "error": f"Invalid tool-selection JSON: {str(exc)}",
+                    "raw": tool_decision_text,
+                }
+            )
+            break
+
+        tool_name = tool_decision.get("tool")
+        params = tool_decision.get("params", {}) or {}
+
+        if not tool_name or tool_name in ("final_answer", "none", "null"):
+            break
+
+     
+        tool_result = await execute_tool(
+            tool_name=tool_name,
+            params=params,
+            db=db,
+            current_user=current_user,
+            session_id=session_id,
+        )
+
+        tool_outputs.append(
+            {
+                "requested_tool": tool_name,
+                "params": params,
+                "result": tool_result,
+            }
+        )
+
+        # Feed tool result back into the next loop iteration
+        current_prompt_context = (
+            f"{current_prompt_context}\n\n"
+            f"TOOL OUTPUTS SO FAR:\n{json.dumps(tool_outputs, default=str, indent=2)}"
+        )
+
+        # Optional: stop early if tool failed in a way that cannot be recovered
+        if not tool_result.get("success", False):
+            break
+
+    # 6. Final response generation
+    final_prompt = final_response_prompt_raw.format(
+        rag_context=rag_context,
+        prioritized_messages=current_prompt_context,
+        outputs=json.dumps(tool_outputs, default=str, indent=2),
+    )
+
+    final_msg = await llm.ainvoke([HumanMessage(content=final_prompt)])
+    final_text = getattr(final_msg, "content", str(final_msg))
+
+    # 7. Save assistant response
     await chat_service.create(
         session_id=session_id,
-        message=payload.message,
-        role=ChatRole.USER,
-        user_id=current_user.user_id,
-    )
-
-    # 3. Retrieve RAG context
-    context_keywords, context = retrieve_rag_context(payload.message)
-
-    project = None
-    if payload.project_id:
-        project_service = ProjectService(db)
-        project = await project_service.get_by_id(payload.project_id)
-
-    # 4. Select only the tool keys relevant to this message, then build system prompt
-    tool_keys = await select_tool_keys(payload.message, client.llm)
-    system_prompt = build_system_prompt(
-        context, tool_keys=tool_keys, current_user=current_user, project=project
-    )
-
-    # 5. Save full context to a temp file for token inspection
-    save_context_to_file(system_prompt, history, payload.message)
-
-    # 6. Run agent and return response
-    agent_executor = create_agent(client.llm, AGENT_TOOLS, system_prompt=system_prompt)
-    current_messages = history + [HumanMessage(content=payload.message)]
-
-    result = await agent_executor.ainvoke({"messages": current_messages})
-    final_message = result["messages"][-1]
-    response_text = (
-        final_message.content
-        if hasattr(final_message, "content")
-        else str(final_message)
-    )
-
-    await chat_service.create(
-        session_id=session_id,
-        message=response_text,
+        message=final_text,
         role=ChatRole.AI,
         user_id=current_user.user_id,
     )
 
     return {
-        "session_id": str(session_id),
-        "response": response_text,
-        "tool_keys_used": tool_keys,
+        "session_id": session_id,
+        "response": final_text,
+        "tool_outputs": tool_outputs,
     }
 
 

@@ -26,7 +26,10 @@ async def generate_session_name(message: str, llm) -> str:
     )
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        name = response.content.strip().strip('"').strip("'")
+        raw = getattr(response, "content", str(response))
+        if not isinstance(raw, str):
+            raw = str(raw)
+        name = raw.strip().strip('"').strip("'")
         return name[:80] or "New Chat"
     except Exception:
         return message[:60].strip() or "New Chat"
@@ -43,102 +46,15 @@ def build_message_history(history_items) -> list:
     return messages
 
 
-def retrieve_rag_context(message: str) -> tuple[str, list]:
+def get_rag_context(message: str) -> tuple[str, list]:
     """Extract keywords from the message and query ChromaDB for relevant context."""
     keywords = extract_keywords(message)
     results = query_collection(query_text=keywords)
     context = results["documents"][0]
-    return keywords, context
-
-
-async def select_tool_keys(message: str, llm) -> list[str]:
-    """Ask the LLM to select only the relevant tool keys from tools.json for the given user message."""
-    tools = _load_tools_json()
-    available = sorted(tools.keys())
-    prompt = (
-        "You are a tool router. Given a user message, select which tool groups "
-        "are needed to handle the request.\n\n"
-        "Available tool groups:\n"
-        + "\n".join(f"- {k}" for k in available)
-        + "\n\nNaming convention: {{entity}}_{{operation}}\n"
-        "  get = read/search/list  |  create = insert new  |  update = modify  |  delete = soft-delete\n\n"
-        f'User message: "{message}"\n\n'
-        "Return ONLY a comma-separated list of the relevant group keys, nothing else."
-    )
-    try:
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        selected = [k.strip() for k in response.content.strip().split(",")]
-        # Keep only keys that actually exist
-        return [k for k in selected if k in available]
-    except Exception:
-        return available  # fall back to all keys on error
-
-
-def build_system_prompt(
-    context: list, tool_keys: list[str], current_user=None, project=None
-) -> str:
-    """Load the system prompt template and inject retrieved context and current user info."""
-    context_dir = Path(__file__).parent.parent / "context"
-    system_prompt_path = context_dir / "SYSTEM.md"
-    with open(system_prompt_path, "r", encoding="utf-8") as f:
-        template = f.read()
-
-    # Build tool documentation block from selected keys in tools.json
-    tools_data = _load_tools_json()
-    tools_sections = []
-    for key in sorted(tool_keys):
-        group = tools_data.get(key)
-        if not group:
-            continue
-        lines = [f"### {group['label']}"]
-        for tool in group["tools"]:
-            params = ", ".join(tool["params"])
-            lines.append(f"\n**{tool['name']}({params})**")
-            lines.append(tool["description"])
-            for note in tool.get("notes", []):
-                lines.append(f"- {note}")
-        tools_sections.append("\n".join(lines))
-    if tools_sections:
-        tools_block = "\n\n## Available Tools\n\n" + "\n\n---\n\n".join(tools_sections)
-        template = template.replace(
-            "## Decision Rules", tools_block + "\n\n---\n\n## Decision Rules"
-        )
-
-    prompt = template.replace("{context}", str(context))
-    if current_user is not None:
-        user_block = (
-            f"\n\n## Current User (YOU are acting on behalf of this user)\n"
-            f"- user_id: {current_user.user_id}\n"
-            f"- name: {current_user.name}\n"
-            f"- email: {current_user.email}\n"
-            "Use this user_id as `user_id`, `created_by`, `assigned_by`, or any other "
-            "caller-identity field in every tool call unless the user explicitly specifies someone else."
-        )
-        prompt = prompt + user_block
-    if project is not None:
-        project_block = (
-            f"\n\n## Active Project Context\n"
-            f"The user has selected the following project as their active context. "
-            f"Assume all work items, tasks, and queries relate to this project unless stated otherwise.\n"
-            f"- project_id: {project.project_id}\n"
-            f"- title: {project.title}\n"
-            f"- status: {project.status.value if hasattr(project.status, 'value') else project.status}\n"
-            f"- managed_by: {project.managed_by}\n"
-        )
-        if project.description:
-            project_block += f"- description: {project.description}\n"
-        prompt = prompt + project_block
-    else:
-        no_project_block = (
-            "\n\n## Project Context\n"
-            "The user has NOT selected any active project. "
-            "Do not assume any specific project is in scope. "
-            "If the user's request requires a project (e.g. creating work items, listing tasks, "
-            "querying project-specific data), ask the user to specify which project they are referring to "
-            "before proceeding with any tool call that needs a project_id."
-        )
-        prompt = prompt + no_project_block
-    return prompt
+    return keywords,f""" 
+        Additional context that may help resolve entities or intent:    
+        {context}
+        """
 
 
 def extract_tool_calls(messages: list) -> list:

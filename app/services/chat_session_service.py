@@ -25,8 +25,16 @@ class ChatSessionService:
         result = await self.db.execute(stmt)
         return total, list(result.scalars().all())
 
-    async def create(self, *, name: str, user_id: uuid.UUID) -> ChatSession:
+    async def create(
+        self,
+        *,
+        name: str,
+        user_id: uuid.UUID,
+        session_id: uuid.UUID | None = None,
+    ) -> ChatSession:
         session = ChatSession(name=name, created_by=user_id, updated_by=user_id)
+        if session_id is not None:
+            session.session_id = session_id
         self.db.add(session)
         await self.db.commit()
         await self.db.refresh(session)
@@ -36,3 +44,10 @@ class ChatSessionService:
         stmt = select(ChatSession).where(ChatSession.session_id == session_id, ChatSession.is_deleted.is_(False))
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def update_name(self, session_id: uuid.UUID, name: str) -> None:
+        session = await self.get(session_id)
+        if session is None:
+            return
+        session.name = name
+        await self.db.commit()

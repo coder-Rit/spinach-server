@@ -35,18 +35,27 @@ class ChatService:
         result = await self.db.execute(stmt)
         return total, list(result.scalars().all())
 
+ 
+
     async def get_recent(
         self,
         *,
         session_id: uuid.UUID,
         limit: int = 10,
+        chat_types: list[ChatRole] | None = None,  # None = fetch all types
     ) -> list[Chat]:
+
+        filters = [
+            Chat.is_deleted.is_(False),
+            Chat.session_id == session_id,
+        ]
+
+        if chat_types:
+            filters.append(Chat.role.in_([ct.value for ct in chat_types]))
+
         recent = (
             select(Chat)
-            .where(
-                Chat.is_deleted.is_(False),
-                Chat.session_id == session_id,
-            )
+            .where(*filters)
             .order_by(Chat.created_at.desc(), Chat.chat_id.desc())
             .limit(limit)
             .subquery()

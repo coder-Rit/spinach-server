@@ -131,9 +131,7 @@ async def update_work_item(
     if not wi or wi.is_deleted:
         raise HTTPException(status_code=404, detail="Work item not found")
 
-    # Basic authz: allow assigner to update
-    if wi.assigned_by != current_user.user_id:
-        raise HTTPException(status_code=403, detail="Forbidden")
+    
 
     wi = await service.update(
         target=wi,
