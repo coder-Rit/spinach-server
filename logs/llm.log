@@ -1,0 +1,15 @@
+2026-05-17 12:28:13,822 [INFO] seed_default_user.py:97 [+] Created default user in PostgreSQL: John Doe (john.doe@spinach.ddns.net)
+2026-05-17 12:28:13,827 [INFO] seed_default_user.py:45 [+] Default user missing in ChromaDB, creating document e0432b32-6de0-4d5c-9a95-e26dd5d489c1
+2026-05-17 12:28:14,118 [INFO] main.py:26 [+] Default user ready (postgres + chromadb): John Doe <john.doe@spinach.ddns.net>
+2026-05-17 12:41:30,162 [INFO] seed_default_user.py:71 [+] Default user already in PostgreSQL: john.doe@spinach.ddns.net
+2026-05-17 12:41:30,168 [INFO] seed_default_user.py:43 [+] Default user already in ChromaDB (e0432b32-6de0-4d5c-9a95-e26dd5d489c1), syncing document
+2026-05-17 12:41:30,500 [INFO] main.py:26 [+] Default user ready (postgres + chromadb): John Doe <john.doe@spinach.ddns.net>
+2026-05-17 12:45:08,896 [INFO] seed_default_user.py:71 [+] Default user already in PostgreSQL: john.doe@spinach.ddns.net
+2026-05-17 12:45:08,900 [INFO] seed_default_user.py:43 [+] Default user already in ChromaDB (e0432b32-6de0-4d5c-9a95-e26dd5d489c1), syncing document
+2026-05-17 12:45:09,246 [INFO] main.py:26 [+] Default user ready (postgres + chromadb): John Doe <john.doe@spinach.ddns.net>
+2026-05-17 12:52:18,750 [INFO] seed_default_user.py:97 [+] Created default user in PostgreSQL: John Doe (john.doe@spinach.ddns.net)
+2026-05-17 12:52:18,754 [INFO] seed_default_user.py:45 [+] Default user missing in ChromaDB, creating document 098370af-8b6b-4559-9bef-617bd6ff6b63
+2026-05-17 12:52:18,957 [INFO] main.py:26 [+] Default user ready (postgres + chromadb): John Doe <john.doe@spinach.ddns.net>
+2026-05-17 12:52:22,342 [INFO] seed_default_user.py:71 [+] Default user already in PostgreSQL: john.doe@spinach.ddns.net
+2026-05-17 12:52:22,346 [INFO] seed_default_user.py:43 [+] Default user already in ChromaDB (098370af-8b6b-4559-9bef-617bd6ff6b63), syncing document
+2026-05-17 12:52:22,545 [INFO] main.py:26 [+] Default user ready (postgres + chromadb): John Doe <john.doe@spinach.ddns.net>

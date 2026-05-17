@@ -30,6 +30,15 @@ def upsert_to_collection(doc_id: str, content: str, metadata: dict = None):
     )
     return doc_id
 
+
+def document_exists(doc_id: str) -> bool:
+    """Return True if a document with this id exists in the collection."""
+    try:
+        result = collection.get(ids=[doc_id])
+        return bool(result.get("ids"))
+    except Exception:
+        return False
+
 def delete_from_collection(doc_id: str):
     try:
         collection.delete(ids=[doc_id])

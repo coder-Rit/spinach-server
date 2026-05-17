@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     JWT_SECRET_KEY: str = "change-me-please-set-a-strong-secret"
     JWT_ACCESS_TOKEN_EXPIRE_DAYS: int = 30
 
+    default_user_name: str = "John Doe"
+    default_user_email: str = "john.doe@spinach.ddns.net"
+    default_user_password: str = "johndoe123"
+
     OPENAI_MODEL:str =""
     OPENROUTER_MODEL:str =""
     NVIDIA_MODEL:str =""
